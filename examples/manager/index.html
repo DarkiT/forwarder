@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>端口转发器配置管理器</title>
+    <link rel="stylesheet" href="/layui/css/layui.css">
+    <script src="/layui/layui.js"></script>
+    <script src="/layui/admin.js"></script>
+    <script src="/layui/axios.min.js"></script>
+    <style>
+        .layui-container{min-width:90%;padding-top: 20px}
+    </style>
+</head>
+<body>
+<div class="layui-container">
+    <div class="layui-row">
+        <table id="forwarderTable" lay-filter="forwarderTable"></table>
+    </div>
+</div>
+
+<script type="text/html" id="forwarderTableToolbar">
+    <div class="layui-btn-container">
+        <button class="layui-btn layui-btn-sm" lay-event="refresh">刷新</button>
+        <button class="layui-btn layui-btn-sm layui-bg-purple" data-load="/ProxySock/start">启用内网代理</button>
+        <button class="layui-btn layui-btn-sm layui-bg-blue" onclick="openAddForwarderModal()">添加转发器</button>
+    </div>
+</script>
+
+<script type="text/html" id="forwarderTableBar">
+    <a class="layui-btn layui-btn-xs layui-bg-blue" lay-event="edit">编辑</a>
+    <a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="del">删除</a>
+</script>
+
+<script type="text/html" id="status-switch">
+    <input type="checkbox" name="status" data-type="{{= d.type }}" data-id="{{= d.id }}" value="{{= d.status }}" title="启用|停用" lay-skin="switch" lay-filter="switchStatus" {{= d.status == true ? "checked" : "" }}>
+</script>
+
+<script>
+    layui.use(['table', 'form', 'layer'], function(){
+        var $ = layui.$;
+        var table = layui.table;
+        var form = layui.form;
+        var layer = layui.layer;
+        var util = layui.util;
+
+        table.render({
+            elem: '#forwarderTable',
+            url: '/forwarders',
+            toolbar: '#forwarderTableToolbar',
+            loading: false,
+            cols: [[
+                {field: 'type', sort: true, title: '类型', align:'center', width: 80},
+                {field: 'localAddr', title: '本地地址', align:'center', minWidth: 150},
+                {field: 'remoteAddr', title: '远程地址', align:'center', minWidth: 150},
+                {field: 'trafficIn', title: '接收', align:'center', width: 130, sort: true, templet: function(d){
+                    return formatBytes(d.trafficIn)
+                }},
+                {field: 'trafficOut', title: '发送', align:'center', width: 130, sort: true, templet: function(d){
+                    return formatBytes(d.trafficOut)
+                }},
+                {field: 'trafficInRate', title: '入站速率', align:'center', width: 130, templet: function(d){
+                    return formatBytes(d.trafficInRate)+"/s"
+                }},
+                {field: 'trafficOutRate', title: '出站速率', align:'center', width: 130, templet: function(d){
+                    return formatBytes(d.trafficOutRate)+"/s"
+                }},
+                {field: 'rateLimit', title: '速率限制', align:'center', width: 190, sort: true, templet: function(d){
+                    if (!d.rateLimit || !d.rateLimit.limitIn) {
+                        return '无限制';
+                    }
+                    return formatBytes(d.rateLimit.limitIn*1024)+"/s / "+formatBytes(d.rateLimit.limitOut*1024)+"/s";
+                }},
+                {field: 'updateTime', title: '状态更新时间', align:'center', width: 150, templet: function(d){
+                    return layui.util.toDateString(d.updateTime * 1000, 'MM-dd HH:mm:ss');
+                }},
+                {field: 'description', title: '备注信息', align:'center', width: 150},
+                {field: 'status', title: '状态', align:'center', width: 100, templet: function(d){
+                    return '<input type="checkbox" name="status" value="'+d.status+'" lay-skin="switch" lay-text="启用|停用" lay-filter="switchStatus" '+(d.status ? 'checked' : '')+' data-id="'+d.id+'" data-type="'+d.type+'">';
+                }},
+                {fixed: 'right', title: '操作', align:'center', width: 130, toolbar: '#forwarderTableBar'}
+            ]],
+            initSort: {
+                field: 'type',
+                type: 'asc'
+            },
+            page: false,
+            done: function(res){
+                form.render('checkbox');
+                
+                form.on('switch(switchStatus)', function(obj){
+                    var id = obj.elem.getAttribute('data-id');
+                    var type = obj.elem.getAttribute('data-type');
+                    var status = obj.elem.checked;
+                    
+                    axios.put('/forwarders/' + type + '/' + id + '/status', {status: status})
+                        .then(function(resp){
+                            layer.msg(status ? '启用成功' : '停用成功');
+                            table.reloadData('forwarderTable');
+                        })
+                        .catch(function(error){
+                            layer.msg((status ? '启用' : '停用') + '失败: ' + error.response.data);
+                            obj.elem.checked = !status;
+                            form.render('checkbox');
+                        });
+                });
+            }
+        });
+
+        // 工具栏事件
+        table.on('toolbar(forwarderTable)', function(obj){
+            if(obj.event === 'refresh'){
+                table.reloadData('forwarderTable');
+            }
+        });
+
+        // 行工具事件
+        table.on('tool(forwarderTable)', function(obj){
+            var data = obj.data;
+            if(obj.event === 'del'){
+                layer.confirm('确定删除此转发器？', function(index){
+                    axios.delete('/forwarders/' + data.type + '/' + data.id)
+                        .then(function(){
+                            layer.msg('删除成功');
+                            obj.del();
+                        })
+                        .catch(function(error){
+                            layer.msg('删除失败: ' + error.response.data);
+                        });
+                    layer.close(index);
+                });
+            } else if(obj.event === 'edit'){
+                openEditForwarderModal(data);
+            }
+        });
+
+        // 定时刷新表格数据
+        setInterval(function(){
+            table.reloadData('forwarderTable');
+        }, 2000);
+    });
+
+    function openAddForwarderModal() {
+        layer.open({
+            type: 1,
+            title: '添加转发器',
+            area: ['430px', '420px'],
+            content: `
+                <form class="layui-form layui-form-pane" style="margin: 20px;">
+                    <div class="layui-form-item" pane>
+                        <label class="layui-form-label">转发类型</label>
+                        <div class="layui-input-block">
+                            <input type="radio" name="type" value="tcp" title="TCP转发" checked>
+                            <input type="radio" name="type" value="udp" title="UDP转发">
+                        </div>
+                    </div>
+                    <div class="layui-form-item">
+                        <label class="layui-form-label">本地地址</label>
+                        <div class="layui-input-block">
+                            <input type="text" name="localAddr" required lay-verify="required" value="0.0.0.0:8899" placeholder="格式：IP:端口" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-form-item">
+                        <label class="layui-form-label">远程地址</label>
+                        <div class="layui-input-block">
+                            <input type="text" name="remoteAddr" required lay-verify="required" value="192.168.1.252:80" placeholder="格式：IP:端口" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-form-item">
+                        <label class="layui-form-label">速率限制</label>
+                        <div class="layui-input-block">
+                            <input type="number" name="allRateLimit" value="0" placeholder="KB/s，0表示无限制" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-form-item">
+                        <label class="layui-form-label">备注信息</label>
+                        <div class="layui-input-block">
+                            <input type="text" name="description" placeholder="可选" value="测试" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-form-item">
+                        <button class="layui-btn layui-btn-fluid" lay-submit lay-filter="addForwarderForm">提交</button>
+                    </div>
+                </form>
+            `,
+            success: function(layero, index){
+                layui.form.render();
+                layui.form.on('submit(addForwarderForm)', function(data){
+                    data.field.allRateLimit = parseFloat(data.field.allRateLimit) || 0;
+                    
+                    axios.post('/forwarders', data.field)
+                        .then(function(resp){
+                            layer.msg('添加成功');
+                            layer.close(index);
+                            layui.table.reloadData('forwarderTable');
+                        })
+                        .catch(function(error){
+                            layer.msg('添加失败: ' + error.response.data);
+                        });
+                    return false;
+                });
+            }
+        });
+    }
+
+    function openEditForwarderModal(data) {
+        layer.open({
+            type: 1,
+            title: '编辑转发器',
+            area: ['400px', '250px'],
+            content: `
+                <form class="layui-form layui-form-pane" style="margin: 20px;">
+                    <div class="layui-form-item">
+                        <label class="layui-form-label">入站速率</label>
+                        <div class="layui-input-block">
+                            <input type="text" name="limitIn" value="${data.rateLimit.limitIn}" placeholder="KB/s，0表示无限制" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-form-item">
+                        <label class="layui-form-label">出站速率</label>
+                        <div class="layui-input-block">
+                            <input type="text" name="limitOut" value="${data.rateLimit.limitOut}" placeholder="KB/s，0表示无限制" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-form-item">
+                        <button class="layui-btn layui-btn-fluid" lay-submit lay-filter="editForwarderForm">提交</button>
+                    </div>
+                </form>
+            `,
+            success: function(layero, index){
+                layui.form.render();
+                layui.form.on('submit(editForwarderForm)', function(formData){
+                    formData.field.rateLimit = parseFloat(formData.field.rateLimit) || -1;
+                    
+                    axios.put('/forwarders/' + data.type + '/' + data.id + '/ratelimit', formData.field)
+                        .then(function(resp){
+                            layer.msg('更新成功');
+                            layer.close(index);
+                            layui.table.reloadData('forwarderTable');
+                        })
+                        .catch(function(error){
+                            layer.msg('更新失败: ' + error.response.data);
+                        });
+                    return false;
+                });
+            }
+        });
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        var k = 1024;
+        var sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+        var i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+</script>
+</body>
+</html>
